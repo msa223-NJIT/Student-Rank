@@ -6,6 +6,7 @@ import argparse
 from faker import Faker
 from cparser import CParser
 
+
 # Try to import tqdm for progress bar, fallback if not available
 try:
     from tqdm import tqdm
@@ -438,7 +439,7 @@ def get_rank_first_student_groups(mdf: pd.DataFrame, ttdf: pd.DataFrame, num_stu
                 index = 2*k
                 if student_groups_df_rows[j][index+1] == None:
                     continue
-                print(f'{Colors.OKGREEN}{student_groups_df_rows[j][index+1]} - {student_groups_df_rows[j][index+2]}')
+            print(f'{Colors.OKGREEN}{student_groups_df_rows[j][index+1]} - {student_groups_df_rows[j][index+2]}')
             print(f'{Colors.ENDC}')
         
     return student_groups_df
@@ -727,7 +728,8 @@ def make_student_group(mdf: pd.DataFrame, current_company: str, num_slots: int, 
     for i in range(len(student_group)):
         selected_students_row_data.append(student_group[i][1])
         selected_students_row_data.append(student_group[i][2])
-        selected_students_index.append(student_group[i][0])
+        if student_group[i][0] != -1:
+            selected_students_index.append(student_group[i][0])
 
     for _ in range(max_group_size - num_slots):
         selected_students_row_data.append(None)
@@ -802,8 +804,24 @@ def main():
     parser.add_argument("--selected_companies", type=int, default=10,
                        help="Number of top companies selected for assignment (default: 10)")
     
+    parser.add_argument(
+        "--selection",
+        choices=["ranked", "criticality"],
+        default="ranked",
+        help="Company selection method (default: ranked)"
+    )
+
+    parser.add_argument(
+        "--dom",
+        type=int,
+        default=0,
+        help="Run Dual Outlier Matching (DOM) Phase -1 and stop when this many companies remain (0 = disabled)"
+    )
+
+
     # Algorithm selection
-    parser.add_argument("--algorithms", nargs='+', type=int, choices=[0, 1, 2], default=[0, 1, 2], 
+    parser.add_argument("--algorithms", nargs='+', type=int, choices=[0, 1, 2, 3], default=[3],
+ 
                        help="Algorithms to test: 0=Fill First, 1=Rank First, 2=Best First (default: all)")
     
     # Output configuration
@@ -854,13 +872,118 @@ def main():
     # Run optimized trial-based mode
     return run_trial_mode(args)
 
+def check_structural_viability(main_df: pd.DataFrame, top_companies: list) -> bool:
+    """
+    A trial is structurally viable if every student has at least
+    one ranked choice (1–5) among the selected companies.
+    """
+    company_columns = [col for col in main_df.columns if col != 'Student']
+
+    for _, row in main_df.iterrows():
+        has_valid_option = False
+
+        for company in top_companies:
+            if company in company_columns:
+                rank_value = row[company]
+                if pd.notna(rank_value) and rank_value <= 5:
+                    has_valid_option = True
+                    break
+
+        if not has_valid_option:
+            return False
+
+    return True
+
+def get_top_companies_criticality(main_df: pd.DataFrame,
+                                  ranked_companies_df: pd.DataFrame,
+                                  K: int) -> list:
+    """
+    Full Phase 1 Criticality-Based Company Reduction (Capacity-Aware)
+
+    Steps:
+    - Compute m = floor(N / K)
+    - Remove companies with Demand < m
+    - Iteratively remove exactly one company at a time
+    - Hard veto: no student may drop to 0 options
+    - Lexicographic minimization:
+        1) Backup Criticality
+        2) Total Criticality Shift
+    """
+
+    import math
+
+    N = len(main_df)
+    m = math.floor(N / K)
+
+    remaining_companies = ranked_companies_df['Company'].tolist()
+
+    # --- Helper: count valid top-5 options per student ---
+    def student_option_counts(df, companies):
+        counts = {}
+        for _, row in df.iterrows():
+            count = 0
+            for c in companies:
+                rank = row[c]
+                if pd.notna(rank) and rank <= 5:
+                    count += 1
+            counts[row['Student']] = count
+        return counts
+
+    # --- Step 1: Hard filter (Demand < m) ---
+    demand = {c: (main_df[c] <= 5).sum() for c in remaining_companies}
+    remaining_companies = [c for c in remaining_companies if demand[c] >= m]
+
+    # If hard filter already reduces below K, return what remains
+    if len(remaining_companies) <= K:
+        return remaining_companies
+
+    # --- Step 2: Iterative criticality removal ---
+    while len(remaining_companies) > K:
+
+        current_counts = student_option_counts(main_df, remaining_companies)
+        removable_candidates = []
+
+        for company in remaining_companies:
+
+            test_companies = [c for c in remaining_companies if c != company]
+            test_counts = student_option_counts(main_df, test_companies)
+
+            # --- Hard veto ---
+            zero_created = any(test_counts[s] == 0 for s in test_counts)
+            if zero_created:
+                continue
+
+            # --- Backup Criticality ---
+            backup_criticality = 0
+            for s in test_counts:
+                if current_counts[s] >= 2 and test_counts[s] == 1:
+                    backup_criticality += 1
+
+            # --- Total Criticality Shift ---
+            total_shift = sum(current_counts[s] - test_counts[s]
+                              for s in test_counts)
+
+            removable_candidates.append(
+                (backup_criticality, total_shift, company)
+            )
+
+        if not removable_candidates:
+            break
+
+        removable_candidates.sort()
+        _, _, company_to_remove = removable_candidates[0]
+        remaining_companies.remove(company_to_remove)
+
+    return remaining_companies
+
 
 def run_trial_mode(args):
     """Run multiple trials with synthetic data and collect statistics - OPTIMIZED"""
     print(f"{Colors.OKBLUE}Running {args.trials} trial(s) with {args.students} students{Colors.ENDC}")
     print(f"Company pool: {args.total_companies} total → {args.selected_companies} selected for assignment")
     print(f"Selection rate: {args.selected_companies/args.total_companies*100:.1f}% (competitive selection)")
-    print(f"Algorithms to test: {[['Fill First', 'Rank First', 'Best First'][alg] for alg in args.algorithms]}")
+    print(f"Algorithms to test: {[['Fill First', 'Rank First', 'Best First', 'Fragility Mirror'][alg] for alg in args.algorithms]}")
+
     print(f"Output file: {args.output_file}")
     print()
     
@@ -869,7 +992,8 @@ def run_trial_mode(args):
     algorithm_functions = {
         0: ('Fill First', get_student_groups),
         1: ('Rank First', get_rank_first_student_groups), 
-        2: ('Best First', get_best_first_student_groups)
+        2: ('Best First', get_best_first_student_groups),
+        3: ('Fragility Mirror', get_fragility_mirror_student_groups)
     }
     
     # Create progress bar if tqdm is available and not disabled
@@ -889,6 +1013,9 @@ def run_trial_mode(args):
         main_df = generate_synthetic_data(args.students, args.total_companies)
         proposed_companies = generate_proposed_companies(main_df)
         
+        # preserve the original
+        original_trial_df = main_df.copy()
+
         # Run company ranking and selection using optimized functions
         ranked_companies_df = get_ranked_companies(main_df)
         ranked_companies_df = ranked_companies_df.sort_values(
@@ -901,15 +1028,54 @@ def run_trial_mode(args):
             input_summary = save_trial_input_data(main_df, proposed_companies, ranked_companies_df, trial + 1, args)
             input_summaries.append(input_summary)
         
-        # Select top companies using optimized function
-        top_companies = get_top_companies(ranked_companies_df, args.selected_companies)
+        # Run DOM routine as preplacement of outlier students into outlier companies
+        if args.dom > 0:
+
+            company_index_map = {
+                company: idx
+                for idx, company in enumerate(ranked_companies_df['Company'].tolist())
+            }
+
+            locked_assignments, remaining_students_df, remaining_companies = run_dom_preprocess(
+                main_df,
+                args.selected_companies,
+                args.dom,
+                company_index_map
+            )
+
+            main_df = remaining_students_df.copy()
+
+        else:
+            locked_assignments = []
+
+        # Select companies using a selection algorthim 
+        if args.selection == "ranked":
+            top_companies = get_top_companies(
+                ranked_companies_df,
+                args.selected_companies
+            )
+        else:
+            top_companies = get_top_companies_criticality(
+                main_df,
+                ranked_companies_df,
+                args.selected_companies
+            )
+
+
+        # Structural viability check (before placement)
+        structurally_viable = check_structural_viability(main_df, top_companies)
+
         
         # Filter to selected companies
         filtered_df = ranked_companies_df[ranked_companies_df['Company'].isin(top_companies)].reset_index(drop=True)
         
         # Run each selected algorithm
-        trial_results = {'trial': trial + 1}
-        
+        trial_results = {
+            'trial': trial + 1,
+            'structurally_viable': structurally_viable
+        }
+
+       
         for algorithm_id in args.algorithms:
             algorithm_name, algorithm_function = algorithm_functions[algorithm_id]
             
@@ -918,28 +1084,74 @@ def run_trial_mode(args):
             
             # Run the algorithm
             student_groups_df = algorithm_function(
-                df_copy, 
-                filtered_df, 
-                args.students,
-                True,  # Always suppress output during trials
+                df_copy,
+                filtered_df,
+                len(df_copy),   # ← THIS IS THE FIX
+                True,
                 proposed_companies
             )
-            
+
+
+            # --- MERGE DOM ASSIGNMENTS BACK IN ---
+
+            if locked_assignments:
+
+                # Determine max group size from Phase 0 output
+                rank_columns = [col for col in student_groups_df.columns if "Student" in col and "Rank" not in col]
+                max_group_size = len(rank_columns)
+
+                dom_rows = []
+
+                # Group DOM assignments by company
+                dom_dict = {}
+                for student_index, company in locked_assignments:
+                    student_name = original_trial_df.iloc[student_index]['Student']
+                    student_rank = original_trial_df.iloc[student_index][company]
+                    dom_dict.setdefault(company, []).append((student_name, student_rank))
+
+                # Build rows matching the student_groups_df structure
+                for company, students in dom_dict.items():
+                    row = [company]
+
+                    for i in range(max_group_size):
+                        if i < len(students):
+                            row.append(students[i][0])
+                            row.append(students[i][1])
+                        else:
+                            row.append(None)
+                            row.append(None)
+
+                    dom_rows.append(row)
+
+                dom_df = pd.DataFrame(dom_rows, columns=student_groups_df.columns)
+
+                # Merge DOM + Phase 0
+                student_groups_df = pd.concat([dom_df, student_groups_df], ignore_index=True)
+
             # Collect statistics using optimized function
             stats = collect_algorithm_statistics(student_groups_df, args.students, args.selected_companies, algorithm_name)
             
             # Add algorithm-specific prefix to column names with descriptive prefixes
-            alg_prefix = ['fill_first', 'rank_first', 'best_first'][algorithm_id]
+            alg_prefix = ['fill_first', 'rank_first', 'best_first', 'fragility_mirror'][algorithm_id]
+
             for key, value in stats.items():
                 if key != 'algorithm':
                     trial_results[f'{alg_prefix}_{key}'] = value
         
         all_results.append(trial_results)
     
+
     # Create results DataFrame and save
     results_df = pd.DataFrame(all_results)
+   
     results_df.to_csv(args.output_file, index=False)
-    
+
+    # Structural viability summary
+    if 'structurally_viable' in results_df.columns:
+        viable_rate = results_df['structurally_viable'].mean() * 100
+        print(f"\nStructural Viability Rate: {viable_rate:.2f}% of trials")
+
+ 
     # Save input data summaries if requested
     if args.save_input_data and input_summaries:
         input_file = args.output_file.replace('.csv', '_input_summary.csv')
@@ -956,9 +1168,9 @@ def run_trial_mode(args):
         print("=" * 60)
         
         for algorithm_id in args.algorithms:
-            alg_prefix = ['fill_first', 'rank_first', 'best_first'][algorithm_id]
-            alg_name = ['Fill First', 'Rank First', 'Best First'][algorithm_id]
-            
+            alg_prefix = ['fill_first', 'rank_first', 'best_first', 'fragility_mirror'][algorithm_id]
+            alg_name = ['Fill First', 'Rank First', 'Best First', 'Fragility Mirror'][algorithm_id]
+ 
             mean_col = f'{alg_prefix}_avg_student_ranking'
             satisfaction_col = f'{alg_prefix}_student_satisfaction_percent'
             satisfaction_top4_col = f'{alg_prefix}_student_satisfaction_top4_percent'
@@ -979,7 +1191,252 @@ def run_trial_mode(args):
                 print(f"  Student Satisfaction (Top-3): {satisfaction_avg:.1f}% ± {satisfaction_std:.1f}%")
                 print(f"  Student Satisfaction (Top-4): {satisfaction_top4_avg:.1f}% ± {satisfaction_top4_std:.1f}%")
                 print(f"  Student Satisfaction (Top-5): {satisfaction_top5_avg:.1f}% ± {satisfaction_top5_std:.1f}%")
+                # Perfect Top-5 placement rate (all students got rank 1-5)
+                # Perfect Top-5 placement rate
+                choice6_col = f'{alg_prefix}_students_got_choice_6_count'
 
+                perfect_mask = results_df[choice6_col] == 0
+                viable_mask = results_df['structurally_viable'] == True
+
+                perfect_total_rate = perfect_mask.mean() * 100
+
+                if viable_mask.sum() > 0:
+                    perfect_viable_rate = (
+                        (perfect_mask & viable_mask).sum() / viable_mask.sum()
+                    ) * 100
+                else:
+                    perfect_viable_rate = 0.0
+
+                print(f"  Perfect Top-5 Rate (All Trials): {perfect_total_rate:.2f}%")
+                print(f"  Perfect Top-5 Rate (Structurally Viable Only): {perfect_viable_rate:.2f}%")
+
+
+
+
+
+def get_fragility_mirror_student_groups(mdf: pd.DataFrame, ttdf: pd.DataFrame, num_students: int, suppress_terminal_output: bool, proposed_companies: dict) -> pd.DataFrame:
+    """
+    Fragility Mirror Algorithm (Algorithm 3)
+
+    1. Always select the most fragile student first.
+    2. For each possible placement, simulate:
+        - Backup fragility increase
+        - Total fragility shift
+    3. Choose the placement with lowest:
+        (backup fragility, total fragility shift, numerical rank)
+    4. Recalculate fragility after every placement.
+    5. If no viable ranked choice exists, assign lowest numerical rank available.
+    """
+
+    # --- Setup ---
+    selected_companies = ttdf['Company'].tolist()
+    group_buckets = []
+    remaining_students = num_students
+    num_companies = len(selected_companies)
+
+    for i in range(num_companies):
+        num_slots = ceil(remaining_students / (num_companies - i))
+        group_buckets.append(num_slots)
+        remaining_students -= num_slots
+
+    group_buckets.sort()
+    max_group_size = group_buckets[-1]
+
+    student_groups_columns = ['Company']
+    for j in range(max_group_size):
+        student_groups_columns.append(f"Student {j+1}")
+        student_groups_columns.append(f"Student {j+1} Rank")
+
+    student_groups_df = pd.DataFrame(columns=student_groups_columns)
+
+    # Track seats
+    seats_remaining = {selected_companies[i]: group_buckets[i] for i in range(num_companies)}
+
+    # Helper to compute fragility
+    def compute_fragility(df):
+        frag = {}
+        for idx, row in df.iterrows():
+            count = 0
+            for c in selected_companies:
+                if c in df.columns:
+                    if row[c] <= 6:
+                        count += 1
+            frag[row['Student']] = count
+        return frag
+
+    # --- Placement loop ---
+    while len(mdf) > 0:
+
+        fragility = compute_fragility(mdf)
+
+        # Select most fragile student
+        min_frag = min(fragility.values())
+        fragile_students = [s for s in fragility if fragility[s] == min_frag]
+        current_student = fragile_students[0]  # arbitrary among equals
+
+        student_row = mdf[mdf['Student'] == current_student].iloc[0]
+
+        best_option = None
+        best_tuple = (float('inf'), float('inf'), float('inf'))
+
+        for company in selected_companies:
+            if seats_remaining[company] <= 0:
+                continue
+
+            rank_value = student_row.get(company, 6)
+
+            # Simulate removal
+            df_copy = mdf.drop(mdf[mdf['Student'] == current_student].index)
+            frag_after = compute_fragility(df_copy)
+
+            backup_frag = 0
+            total_shift = 0
+
+            for s in frag_after:
+                before = fragility.get(s, 0)
+                after = frag_after.get(s, 0)
+                if before >= 2 and after == 1:
+                    backup_frag += 1
+                total_shift += (before - after)
+
+            candidate_tuple = (backup_frag, total_shift, rank_value)
+
+            if candidate_tuple < best_tuple:
+                best_tuple = candidate_tuple
+                best_option = company
+
+        # Fallback if no option
+        if best_option is None:
+            best_option = selected_companies[0]
+
+        # Assign
+        seat_index = group_buckets[selected_companies.index(best_option)] - seats_remaining[best_option]
+        if best_option not in student_groups_df['Company'].values:
+            row_data = [best_option] + [None]*(2*max_group_size)
+            student_groups_df.loc[len(student_groups_df)] = row_data
+
+        row_idx = student_groups_df[student_groups_df['Company'] == best_option].index[0]
+        col_student = 1 + 2*seat_index
+        col_rank = col_student + 1
+
+        student_groups_df.iloc[row_idx, col_student] = current_student
+        student_groups_df.iloc[row_idx, col_rank] = student_row.get(best_option, 6)
+
+        seats_remaining[best_option] -= 1
+        mdf = mdf.drop(mdf[mdf['Student'] == current_student].index).reset_index(drop=True)
+
+    return student_groups_df
+
+def run_dom_preprocess(df, selected_companies, dom_stop, company_index_map):
+
+    # --- INITIAL POOLS ---
+    unassigned_students = df.copy()
+    dom_pool_companies = list(df.columns[1:])  # adjust if needed
+    struct_companies_remaining = selected_companies
+
+    locked_assignments = []
+
+    while struct_companies_remaining > dom_stop:
+
+        if struct_companies_remaining <= 0:
+            break
+
+        if len(dom_pool_companies) == 0:
+            break
+
+        # --- MOVING MIN SEATS (FLOOR) ---
+        moving_MinSeats = len(unassigned_students) // struct_companies_remaining
+
+        if moving_MinSeats == 0:
+            break
+
+        # --- WEANING ---
+        eligible_companies = []
+
+        for c in dom_pool_companies:
+            demand = unassigned_students[c].apply(lambda x: 1 if x <= 5 else 0).sum()
+            if demand >= moving_MinSeats:
+                eligible_companies.append((c, demand))
+
+        if not eligible_companies:
+            break
+
+        # --- STEP 1: MIN DEMAND ---
+        min_demand = min(d for _, d in eligible_companies)
+        demand_ties = [c for c, d in eligible_companies if d == min_demand]
+
+        # --- STEP 2: SIMULATED FILL TIE-BREAK ---
+        best_company = None
+        best_fragility_score = None
+
+        for c in demand_ties:
+
+            candidates = unassigned_students[unassigned_students[c] <= 5]
+
+            fragility_list = []
+
+            for idx, row in candidates.iterrows():
+                remaining_options = sum(
+                    1 for comp in dom_pool_companies
+                    if row[comp] <= 5
+                )
+                fragility_list.append((idx, remaining_options, row[c]))
+
+            fragility_list.sort(key=lambda x: (x[1], -x[2]))
+
+            selected = fragility_list[:moving_MinSeats]
+
+            fragility_score = sum(x[1] for x in selected)
+
+            if best_fragility_score is None or fragility_score < best_fragility_score:
+                best_fragility_score = fragility_score
+                best_company = c
+
+            elif fragility_score == best_fragility_score:
+                if company_index_map[c] < company_index_map[best_company]:
+                    best_company = c
+
+        if best_company is None:
+            break
+
+        # --- LOCK COMPANY ---
+        candidates = unassigned_students[unassigned_students[best_company] <= 5]
+
+        fragility_list = []
+
+        for idx, row in candidates.iterrows():
+            remaining_options = sum(
+                1 for comp in dom_pool_companies
+                if row[comp] <= 5
+            )
+            fragility_list.append((idx, remaining_options, row[best_company]))
+
+        fragility_list.sort(key=lambda x: (x[1], -x[2]))
+
+        selected_students = [x[0] for x in fragility_list[:moving_MinSeats]]
+
+        # assign and lock
+        for s in selected_students:
+            locked_assignments.append((s, best_company))
+
+        unassigned_students = unassigned_students.drop(selected_students)
+        dom_pool_companies.remove(best_company)
+
+        struct_companies_remaining -= 1
+
+        # Debug Printing
+        # print("DOM COMPLETE")
+        # print("Locked students:", len(locked_assignments))
+        # print("Remaining DOM pool companies:", len(dom_pool_companies))
+        # print("Remaining students:", len(unassigned_students))
+        # print("Structural companies remaining:", struct_companies_remaining)
+        # print("------")
+
+    return locked_assignments, unassigned_students, dom_pool_companies
+    
+
+    return main_df, ranked_companies_df, locked_assignments
+    
 
 if __name__ == '__main__':
     main()
