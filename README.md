@@ -1,25 +1,64 @@
-# Student-Rank 🎓
+# Student-Rank (Anti-Slytherin) 🎓
 
-A comprehensive Python-based student assignment system that optimally allocates students to company groups based on preference rankings. This program implements three distinct assignment algorithms with statistical analysis capabilities, designed for scenarios like internship placements, project assignments, or group formations.
+**A Fairness-Centered Algorithm Suite for Preference-Based Group Assignment**
 
-## 🎯 Overview
+*Version: Current (backwards compatible with all prior command usage)*
 
-The Student-Rank system addresses the complex problem of fairly assigning students to companies/groups when both parties have preferences. The program:
+---
 
-- **Generates realistic synthetic data** with proper ranking constraints (unique ranks 1-5 per student)
-- **Implements three assignment algorithms** with different optimization strategies
-- **Provides comprehensive statistical analysis** with multiple performance metrics
-- **Supports both batch analysis and single-file processing**
-- **Includes a standalone executable** for non-technical users
+## The Problem This Solves
 
-## 🚀 Quick Start
+Every semester, instructors running project-based courses face the same uncomfortable moment: students form teams, and someone ends up somewhere they did not want to be. In Harry Potter terms, they end up in Slytherin. Proximity bias, social dynamics, and the randomness of who speaks first all conspire against fairness. The student who ranked five startup ideas and got none of them has no recourse. The instructor has no visibility into how badly the outcome diverged from what was possible.
+
+Anti-Slytherin starts from a different premise: collect explicit ranked preferences first, then let an algorithm do the assignment. The goal is not simply to maximize average satisfaction, which can hide individual failures behind aggregate statistics. The goal is to ensure that no student receives a rank-6 (unranked) assignment if the preference data made a better outcome structurally possible.
+
+This turns out to be a harder problem than it looks. Naive popularity-based company selection creates preference distributions that are structurally unresolvable for some students before placement even begins. The research documented here is the systematic investigation of that failure mode and the construction of algorithms that address it layer by layer.
+
+---
+
+## The Research Arc
+
+The system began as a simple ranker: collect Google Form data, run one of three placement algorithms, output group assignments. That original capability is fully preserved.
+
+Before simulation work began, the pre-criticality algorithms were used to successfully place three groups of real students at NJIT. Only one swap was needed across all three placements. This early real-world success is an important data point: it suggests that at least in the NJIT context, student selection of student-proposed companies may be highly clumped in ways that are favorable to placement algorithms. Real-world preference data may be meaningfully non-normal compared to synthetic data, and in a direction that helps rather than hurts. This hypothesis has not yet been formally tested but informs how the simulation results should be interpreted.
+
+Monte Carlo simulation then revealed a structural problem: under popularity-based company selection, it was only statistically possible for every student to land in a top-five choice approximately one third of the time. This was a major turning point. No placement algorithm, however clever, can fix a structurally non-viable configuration — if a student has no ranked option among the selected companies before placement begins, a rank-6 assignment is inevitable.
+
+The solution was a new Phase 1 strategy called **criticality**. Rather than selecting companies by how popular they are, criticality evaluates each candidate company by asking: if this company were removed, how many student assignments would become structurally impossible? Companies whose removal causes the most damage are selected first, and the process iterates until the pool is filled. Ties are resolved by secondary ordering. Criticality raised structural viability from approximately 34% of trials to effectively 100%.
+
+With criticality in place, the next question was how well the placement algorithms could achieve Perfect Top-5 outcomes — trials where every student received a rank 1-5 assignment with no rank-6 fallbacks. Under criticality selection the results were: Fill First 2.8%, Best First 0.7%, Fragility Mirror 0.6%, Rank First 0.4%. For comparison, under popularity-based selection those rates were Fill First 2.1%, Best First 1.0%, and Rank First 0.7% — but applied only to the 34% of trials that were structurally viable. Criticality roughly tripled the absolute Perfect Top-5 rates by ensuring every trial starts from a sound configuration. Even so, Fill First's 2.8% was far from the 100% target.
+
+The success of criticality raised a natural question: could a mirror of criticality applied at the placement stage similarly improve outcomes? This motivated the **Fragility Mirror** algorithm, which at each step identifies the most structurally vulnerable student (fewest viable options remaining) and places them first, choosing the assignment that minimizes cascading damage to other students. Fragility Mirror is philosophically sound but has a known weakness in its endgame: as the final few students are placed, the fragility landscape becomes sparse and the scoring criteria degrade, producing worse performance than the simpler algorithms in those final steps. A better endgame strategy remains a possibility for future improvement, though the working hypothesis is that rank-improvement swapping in the planned Stage 2 pipeline will absorb most of these cases without requiring targeted fixes.
+
+The focus then shifted to a different question: rather than trying to get any single algorithm to achieve Perfect Top-5 directly, could the data be conditioned so that swapping becomes feasible? For 30 students assigned to 10 companies, there are approximately 5.6 × 10¹⁸ possible assignments from the start — swapping the full space is not tractable. But if an algorithm can get close enough to a perfect solution, most repairs require swap chains of length three or fewer, giving approximately 15³ = 3,375 options to evaluate. The goal became: get every trial to a configuration where no more than three swaps are needed.
+
+Prior analysis had shown that Fill First works best with clumped data. The concept behind **Dual Outlier Matching (DOM)** was to create that clumping artificially. DOM identifies outlier companies — those that almost no student ranked — and pairs them with outlier students — those with almost no viable options elsewhere. Those companies are filled completely first. The remaining students, now more clumped in their preferences, are passed to the normal Phase 1 and Phase 2 pipeline.
+
+Testing DOM combined with Fill First and criticality selection across 1,000 trials for N=30 students placed into between 8 and 12 companies shows that the swappability threshold of fewer than 3 swaps needed is achievable. The sweet spot is when DOM fills the first three to four companies before handing off to the main pipeline. To date, testing has only been conducted at N=30, and swapping itself has not yet been implemented.
+
+---
+
+## Overview
+
+Student-Rank (informally called Anti-Slytherin) is a Python-based system for optimally assigning students to startup company groups based on ranked preferences. It implements four placement algorithms, two company-selection strategies, an optional Dual Outlier Matching pre-processing phase, and a Monte Carlo simulation harness for statistical comparison across many trials.
+
+All original command-line arguments remain intact. New flags are additive and default to backward-compatible behavior.
+
+---
+
+## Quick Start
 
 ### For Technical Users
+
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Run statistical comparison of all algorithms (20 companies, select top 10)
+# Run all four algorithms with criticality selection, 100 trials
+python ranker2.py --trials 100 --students 50 --total_companies 20 --selected_companies 10 \
+    --selection criticality --algorithms 0 1 2 3
+
+# Original usage (fully backwards compatible)
 python ranker2.py --trials 100 --students 50 --total_companies 20 --selected_companies 10
 
 # Generate standalone executable
@@ -27,592 +66,419 @@ pyinstaller --onefile --name StudentRanker ranker2.py
 ```
 
 ### For Non-Technical Users
-Use the pre-built `StudentRanker.exe` executable:
+
 ```bash
-# 50% selection rate - balanced competition
+# Pre-built executable — all arguments identical
 StudentRanker.exe --trials 50 --students 30 --total_companies 16 --selected_companies 8
 ```
 
-## 📋 Requirements
+---
 
-Install dependencies using the provided `requirements.txt`:
+## Requirements
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**Core Dependencies:**
-- `pandas>=2.2.3` - Data manipulation and analysis
-- `numpy>=2.2.1` - Numerical computing and vectorized operations
-- `Faker>=33.1.0` - Synthetic data generation
-- `tqdm>=4.66.0` - Progress bars (optional, enhanced UX)
+**Core dependencies:**
+- `pandas >= 2.2.3` — data manipulation and analysis
+- `numpy >= 2.2.1` — numerical computing
+- `Faker >= 33.1.0` — synthetic company and student name generation
+- `tqdm >= 4.66.0` — progress bars (optional, enhances UX)
 
-**Development Dependencies:**
-- `PyInstaller>=6.15.0` - Standalone executable creation
+**Development dependency:**
+- `PyInstaller >= 6.15.0` — standalone executable creation
 
-## 🔧 System Architecture
+---
 
-### Core Components
+## System Architecture
 
-#### 1. **Data Generation Engine** (`generate_synthetic_data`)
-- **Purpose:** Creates realistic student preference data with proper constraints
-- **Features:**
-  - Ensures unique rankings 1-5 per student (no duplicates)
-  - Remaining companies automatically ranked as 6 (unranked/equal weight)
-  - Uses company names from file or generates fake companies
-  - Configurable student and company counts
+The pipeline has evolved from a two-phase system to a four-phase system. Phases -1 and 1 govern which companies receive students; Phase 2 governs how students are placed.
 
-#### 2. **Company Ranking System** (`get_ranked_companies`)
-- **Purpose:** Evaluates and ranks companies based on student preferences
-- **Algorithm:**
-  - **Weighted Scoring:** Rank weights [5,4,3,2,1] for ranks 1-5
-  - **Composite Score:** 75% rank score + 25% adjusted score  
-  - **Tie-Breaking:** Secondary sort by Rank 1, Rank 2, etc. counts
-  - **Final Selection:** Random selection among perfect ties
+### Phase -1: Dual Outlier Matching (DOM) *(optional)*
 
-#### 3. **Assignment Algorithms** (Three distinct strategies)
-- **Fill First:** Company-centric sequential optimization
-- **Rank First:** Student preference-centric rank-by-rank processing  
-- **Best First:** Iterative quality-focused selection
+When enabled via `--dom`, DOM runs before company selection. It identifies outlier companies (few students ranked them) and pairs them with outlier students (few viable ranked options). Those companies are filled completely first, then the remaining companies and students proceed to normal Phase 1 and Phase 2 processing.
 
-#### 4. **Statistical Analysis Engine** (`collect_algorithm_statistics`)
-- **Metrics Collected:**
-  - Average student ranking and standard deviation
-  - Student satisfaction rates with confidence intervals
-  - Detailed choice distribution (counts and percentages)
-  - Group size variance and distribution analysis
+The `--dom N` parameter specifies how many companies should remain when DOM stops processing. Companies locked by DOM = `selected_companies` minus N. DOM = 0 (the default) disables this phase entirely.
 
-#### 5. **Progress & Output Management**
-- **Real-time Progress:** tqdm-based progress bars (default enabled)
-- **Comprehensive CSV Output:** Raw counts and percentage distributions
-- **Terminal Output:** Color-coded results with statistical summaries
+**Research finding:** moderate DOM (locking 2–3 companies) improves average rank and stability. Aggressive DOM (locking 7–8 companies) maximizes Perfect Top-5 rates but increases volatility.
 
-## 📊 Assignment Algorithms Deep Dive
+### Phase 1: Company Selection
 
-### 1. Fill First Algorithm (`get_student_groups`)
-**Philosophy:** Company-centric optimization with sequential processing
+Selects which companies from the full pool will receive student assignments. Two strategies are available via `--selection`:
 
-**Strategy:**
-- Companies processed in reverse ranking order (best companies last)
-- Each company group filled completely before moving to next
-- Greedy group sizing approach for early allocation
+- **`ranked` (default)** — Weighted popularity scoring. Rank weights [5,4,3,2,1] for ranks 1–5. Composite score = 75% rank score + 25% adjusted score. Ties broken by rank-1 count, rank-2 count, etc. This is the original method; all prior results used this.
+- **`criticality`** — For each candidate company, computes how many student assignments become structurally impossible if that company is removed. Companies whose removal causes the most damage are selected first. Research finding: criticality dramatically improves structural viability compared to ranked selection.
 
-**Selection Process:**
-1. **Proposed Company Priority:** Students who proposed this company get automatic selection
-2. **Rank-Based Selection:** Lower ranks (higher preference) prioritized
-3. **Tie-Breaking:** Higher "remaining rank average" preferred
-4. **Complete Filling:** Entire group filled before next company
+### Phase 2: Placement Algorithms
 
-**Characteristics:**
-- ✅ **Guarantees:** Every company gets filled to capacity
-- ✅ **Consistency:** Predictable, deterministic results
-- ⚠️ **Trade-off:** Early companies may get better students
-- 📈 **Performance:** Fast execution, simple logic
+Four algorithms assign students to the selected companies. All four share the same input and output format and are fully interchangeable.
 
-### 2. Rank First Algorithm (`get_rank_first_student_groups`)
-**Philosophy:** Student preference-centric with democratic processing
+#### Algorithm 0: Fill First *(get_student_groups)*
 
-**Strategy:**
-- Process all rank-1 preferences first, then rank-2, etc.
-- All companies compete simultaneously for students at each rank level
-- Progressive filling ensures top preferences honored across all companies
+Company-centric. Processes companies in reverse ranking order (best companies last). Fills each company completely before moving to the next. Proposed-company students get automatic selection; remaining slots filled by rank then remaining-rank-average tie-break.
 
-**Selection Process:**
-1. **Rank-Level Processing:** All students with rank N processed simultaneously
-2. **Forced Placement:** Proposed companies get automatic student placement
-3. **Competitive Selection:** Companies compete for remaining students
-4. **Progressive Ranks:** Continue through ranks 1→6 until all groups filled
+Fill First is the primary subject of ongoing research. Although it produces a slightly higher average student rank than Rank First, it is currently the only algorithm that consistently achieves the structural condition required for swappability: configurations where all remaining rank dissatisfaction can be repaired in fewer than three swap chains.
 
-**Characteristics:**
-- ✅ **Student-Focused:** Maximizes fulfillment of top preferences
-- ✅ **Democratic:** All companies get equal opportunity at each rank
-- ✅ **Fair Distribution:** Prevents early companies from monopolizing good students
-- 📈 **Performance:** Excellent student satisfaction rates
+#### Algorithm 1: Rank First *(get_rank_first_student_groups)*
 
-### 3. Best First Algorithm (`get_best_first_student_groups`)
-**Philosophy:** Quality optimization with balanced iterative selection
+Student preference-centric. Processes all rank-1 preferences across all companies simultaneously, then rank-2, etc. Maximizes top-preference fulfillment. Historically produces the highest student satisfaction rates but the lowest Perfect Top-5 rate.
 
-**Strategy:**
-- Each round, every company selects their single best available student
-- Continues until all groups are filled
-- Balances individual quality with overall fairness
+#### Algorithm 2: Best First *(get_best_first_student_groups)*
 
-**Selection Process:**
-1. **Round-Based:** Each company gets one selection per round
-2. **Quality Criteria:** 
-   - Automatic selection for proposed company + rank 1 match
-   - Otherwise: best combination of low rank + high remaining average
-3. **Iterative Filling:** Continues rounds until all positions filled
-4. **Balanced Opportunity:** Each company participates in every round
+Iterative quality optimization. Each round, every company selects its single best available student. Continues until all positions are filled. Balances quality with fairness but produces more variable results.
 
-**Characteristics:**
-- ✅ **Quality-Focused:** Optimizes for best possible matches
-- ✅ **Balanced:** Equal selection opportunity per round
-- ⚠️ **Variability:** Results can vary based on competition dynamics
-- 📈 **Performance:** Sophisticated optimization, longer execution
+#### Algorithm 3: Fragility Mirror *(get_fragility_mirror_student_groups)*
 
-## 📈 Statistical Analysis Framework
+Structurally defensive placement. At each step:
 
-### Primary Metrics
+1. Computes fragility for all unplaced students. Fragility = number of remaining viable companies for that student (only ranks 1–5 count as viable; rank 6 is a fallback, not a viable option).
+2. Selects the most fragile student (lowest viable options remaining).
+3. For each candidate company, simulates the placement and scores by: (a) backup fragility increase caused for other students, (b) total fragility shift across all students, (c) the student's numerical rank for that company as a final tie-break.
+4. Places the student in the company that minimizes cascading damage.
+5. Recomputes fragility dynamically after every placement.
+6. If no viable ranked choice exists for a student, assigns the lowest numerical rank available (rank-6 fill).
 
-#### Student Satisfaction Analysis
-- **Average Ranking:** Mean rank assigned to students (1.0 = perfect)
-- **Standard Deviation:** Consistency of assignments
-- **Satisfaction Rate:** Percentage receiving ranks 1-3
-- **Choice Distribution:** Detailed breakdown of rank 1-6 assignments
+Fragility Mirror has a known weakness in its endgame: as the final few students are placed, the fragility landscape becomes sparse and scoring criteria degrade. A better endgame strategy remains a possibility, though the working hypothesis is that rank-improvement swapping in Stage 2 of the planned swap pipeline will absorb most of these cases.
 
-#### Group Formation Analysis  
-- **Group Size Variance:** Evenness of group distribution
-- **Company Ranking:** Quality assessment of company selections
-- **Assignment Efficiency:** Speed and resource utilization
+---
 
-### Output Format
-**Enhanced CSV Structure:**
-```csv
-trial,algorithm_mean_ranking,algorithm_std_dev,algorithm_satisfaction_rate,
-algorithm_rank_1_count,algorithm_rank_1_pct,algorithm_rank_2_count,algorithm_rank_2_pct,
-[...continues for all ranks]
+## Structural Viability
+
+A trial is **structurally viable** if every student has at least one selected company ranked 1–5 in their preferences. If any student has zero viable options among the selected companies, the trial is structurally non-viable — Slytherin is structurally possible regardless of algorithm behavior.
+
+The function `check_structural_viability()` evaluates this before placement runs. The result is stored in the `structurally_viable` column of the output CSV and reported as **Structural Viability Rate** in the terminal summary.
+
+---
+
+## Complete Usage Guide
+
+### Trial Mode (Primary Use Case)
+
+Generates synthetic preference data and runs Monte Carlo statistical comparisons across multiple trials.
+
+#### Core Arguments
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--trials` | int | 1 | Number of trials to run |
+| `--students` | int | 30 | Number of students per trial |
+| `--total_companies` | int | 20 | Total companies available for ranking before selection |
+| `--selected_companies` | int | 10 | Number of companies selected for assignment |
+| `--selection` | str | ranked | Company selection method: `ranked` or `criticality` |
+| `--dom` | int | 0 | Dual Outlier Matching threshold; 0 = disabled. Stop DOM when this many selected companies remain (companies locked = selected_companies − dom) |
+| `--algorithms` | int+ | [0] | Algorithms to run: 0=Fill First, 1=Rank First, 2=Best First, 3=Fragility Mirror. Multiple allowed: `--algorithms 0 1 2 3` |
+| `--output_file` | str | algorithm_statistics.csv | Output CSV filename |
+| `--save_input_data` | flag | off | Also save per-trial input statistics to a second CSV |
+| `--seed` | int | time-based | Random seed for reproducible results |
+
+#### Advanced Arguments
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--suppress_terminal_output` | flag | off | Minimize console output during trials |
+| `--no_progress_bar` | flag | off | Disable tqdm progress bar |
+| `--progress_interval` | int | 10 | Show progress every N trials |
+
+#### Example Commands
+
+**Standard comparison, all four algorithms, criticality selection:**
+```bash
+python ranker2.py --trials 100 --students 50 --total_companies 20 --selected_companies 10 \
+    --selection criticality --algorithms 0 1 2 3
 ```
 
-**Statistical Summary:**
-- Cross-trial averages with confidence intervals
-- Algorithm performance comparisons
-- Variance and consistency analysis
-
------
-
-## 💻 Usage Guide
-
-### Trial Mode (Statistical Analysis) - Primary Use Case
-
-The main functionality generates synthetic data and performs statistical comparisons across multiple trials.
-
-#### Core Arguments:
-- `--trials` **(Optional, default=1)** - Number of trials (max: 1000)
-- `--students` **(Optional, default=30)** - Students per trial  
-- `--total_companies` **(Optional, default=20)** - Total companies in ranking pool
-- `--selected_companies` **(Optional, default=10)** - Top companies selected for assignment
-- `--algorithms` **(Optional, default=all)** - Algorithm selection:
-  - `0`: Fill First (`ff`)
-  - `1`: Rank First (`rf`)
-  - `2`: Best First (`bf`)
-  - Multiple: `--algorithms 0 2` for Fill First + Best First only
-- `--output_file` **(Optional, default="algorithm_statistics.csv")** - Output filename
-- `--save_input_data` **(Optional)** - Save input statistics for analysis
-- `--no_progress_bar` **(Optional)** - Disable progress indicators
-
-#### Advanced Arguments:
-- `--suppress_terminal_output` **(Optional)** - Minimize console output
-- `--progress_interval` **(Optional, default=10)** - Progress update frequency
-- `--seed` **(Optional)** - Random seed for reproducible results
-- `--no_progress_bar` **(Optional)** - Disable progress indicators completely
-
-#### Example Commands:
-
+**DOM analysis (lock 7 companies, Fill First only):**
 ```bash
-# Standard comparison with 50% company selection (balanced competition)
+python ranker2.py --trials 1000 --students 30 --total_companies 30 --selected_companies 10 \
+    --selection criticality --algorithms 0 --dom 3 --seed 42 --output_file dom_analysis.csv
+```
+
+**Fill First only with criticality (current recommended baseline):**
+```bash
+python ranker2.py --trials 100 --students 30 --total_companies 20 --selected_companies 10 \
+    --selection criticality
+```
+
+**Original behavior (fully backwards compatible):**
+```bash
 python ranker2.py --trials 100 --students 50 --total_companies 20 --selected_companies 10
-
-# High competition scenario - only 25% of companies get students
-python ranker2.py --trials 200 --students 30 --total_companies 40 --selected_companies 10
-
-# Large-scale analysis with specific algorithms and input data collection
-python ranker2.py --trials 500 --algorithms 0 2 --save_input_data --output_file "ff_vs_bf_analysis.csv"
-
-# Low competition research scenario - 75% selection rate
-python ranker2.py --trials 100 --students 60 --total_companies 16 --selected_companies 12
-
-# Executable version (same arguments)
-./dist/StudentRanker.exe --trials 50 --students 25 --total_companies 20 --selected_companies 8
 ```
 
-### 🏢 Company Selection Architecture
-
-The program uses a **two-stage company system** that models realistic competitive scenarios:
-
-#### **Stage 1: Company Pool Generation**
-- `--total_companies` defines the **full universe** of companies
-- All companies receive student preference rankings
-- Larger pools create more realistic preference distributions
-- **Default: 20 companies** (provides good statistical diversity)
-
-#### **Stage 2: Competitive Selection**
-- `--selected_companies` determines how many **top companies** get students
-- Only highest-ranked companies participate in assignments
-- Creates competitive pressure and meaningful rankings
-- **Default: 10 companies** (50% selection rate)
-
-#### **Selection Rate Impact:**
+**High-competition scenario:**
 ```bash
-# High Competition (20% selection) - Only elite companies get students
---total_companies 50 --selected_companies 10
-
-# Balanced Competition (50% selection) - Moderate competitive pressure  
---total_companies 20 --selected_companies 10
-
-# Low Competition (80% selection) - Most companies get students
---total_companies 15 --selected_companies 12
+python ranker2.py --trials 200 --students 30 --total_companies 40 --selected_companies 10 \
+    --selection criticality --algorithms 0 1 2 3
 ```
 
-**Research Insight:** Different selection rates reveal how algorithms perform under varying competitive pressures, making this ideal for studying algorithm robustness and fairness.
-
-#### Performance Characteristics:
-- **Optimized Execution:** 3.5-9.7x speedup through vectorized operations
-- **Memory Efficient:** Processes large datasets without memory issues
-- **Progress Tracking:** Real-time feedback for long-running analyses
-- **Error Handling:** Robust error handling with informative messages
+**Seeded reproducible run:**
+```bash
+python ranker2.py --trials 500 --algorithms 0 3 --seed 42 --output_file ff_vs_fragility.csv
+```
 
 ### Legacy Mode (Single File Processing)
 
-For processing existing CSV files with student preference data.
+For processing an existing CSV file with real student preference data collected via Google Forms or similar.
 
-#### Legacy Arguments:
-- `--file` **(Required)** - Path to input CSV file
-- `--type` **(Required)** - Algorithm selection (0, 1, or 2)
-- `--students` **(Optional)** - Number of students to process
-- `--suppress_terminal_output` **(Optional)** - Minimize output
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--file` | str | required | Path to input CSV file |
+| `--type` | int | required | Algorithm: 0=Fill First, 1=Rank First, 2=Best First |
+| `--students` | int | all | Number of students to process |
+| `--suppress_terminal_output` | flag | off | Minimize output |
 
-#### Legacy Example:
 ```bash
 python ranker2.py --file data/form_test_data_cc.csv --type 1 --students 30
 ```
 
-## 📊 Algorithm Performance Analysis
+---
 
-### Typical Performance Characteristics
+## Company Selection Architecture
 
-Based on extensive testing across various scenarios:
+### Stage 1: Pool Generation
 
-#### Fill First Algorithm
-- **Student Satisfaction:** 85-95% (high consistency)
-- **Average Ranking:** 1.8-2.2 (good overall scores)
-- **Strengths:** Reliable, predictable, company-friendly
-- **Best For:** Scenarios prioritizing company satisfaction and predictability
+`--total_companies` defines the full universe of companies. All companies receive student preference rankings. Larger pools create more realistic preference distributions and competitive pressure.
 
-#### Rank First Algorithm  
-- **Student Satisfaction:** 88-96% (highest student satisfaction)
-- **Average Ranking:** 1.7-2.0 (excellent student outcomes)
-- **Strengths:** Maximizes student preference fulfillment
-- **Best For:** Student-centric scenarios where top choices matter most
+### Stage 2: Selection
 
-#### Best First Algorithm
-- **Student Satisfaction:** 70-85% (variable, optimization-dependent)
-- **Average Ranking:** 2.2-2.8 (more variable outcomes)
-- **Strengths:** Theoretical optimization, balanced approach
-- **Best For:** Complex scenarios requiring sophisticated matching
+`--selected_companies` determines how many top companies receive student assignments. `--selection` controls which companies are chosen.
 
-### Performance Metrics Interpretation
+**Selection rate examples:**
+- High competition (20% selection): `--total_companies 50 --selected_companies 10`
+- Balanced competition (50% selection): `--total_companies 20 --selected_companies 10`
+- Low competition (80% selection): `--total_companies 15 --selected_companies 12`
 
-#### Statistical Significance
-- **Mean Ranking:** Lower values indicate better student satisfaction
-- **Standard Deviation:** Lower values indicate more consistent results
-- **Satisfaction Rate:** Percentage receiving ranks 1-3 (target: >85%)
-- **Choice Distribution:** Detailed breakdown shows preference fulfillment patterns
+---
 
-#### Comparative Analysis
-The program enables direct comparison through:
-- **Cross-algorithm trials** with identical synthetic data
-- **Statistical significance testing** across multiple runs
-- **Variance analysis** to assess consistency
-- **Edge case testing** with extreme student/company ratios
+## Output Specifications
 
-## 🔧 Technical Implementation Details
+### Trial Mode Output *(algorithm_statistics.csv)*
 
-### Data Generation Algorithm
-```python
-# Ranking Constraint Logic
-for each student:
-    - Select 5 random companies to rank
-    - Assign unique ranks 1-5 to selected companies  
-    - Set all other companies to rank 6 (unranked)
-    - Ensures no duplicate rankings per student
+Each row represents one trial. The first two columns are trial-level; remaining columns repeat per algorithm using the prefix shown below.
+
+#### Column Prefixes
+
+| Prefix | Algorithm |
+|--------|-----------|
+| `fill_first_` | Algorithm 0 — Fill First |
+| `rank_first_` | Algorithm 1 — Rank First |
+| `best_first_` | Algorithm 2 — Best First |
+| `fragility_mirror_` | Algorithm 3 — Fragility Mirror |
+
+#### Trial-Level Columns
+
+| Column | Description |
+|--------|-------------|
+| `trial` | Trial number (1-indexed) |
+| `structurally_viable` | True if every student had at least one company ranked 1–5 among the selected companies |
+
+#### Per-Algorithm Columns *(repeated for each prefix)*
+
+| Column | Description |
+|--------|-------------|
+| `{prefix}_avg_student_ranking` | Mean rank assigned across all students (lower = better) |
+| `{prefix}_std_student_ranking` | Standard deviation of assigned ranks |
+| `{prefix}_median_student_ranking` | Median assigned rank |
+| `{prefix}_iqr_student_ranking` | Interquartile range (Q3 minus Q1) |
+| `{prefix}_student_satisfaction_percent` | Percentage of students assigned ranks 1–3 |
+| `{prefix}_student_satisfaction_top4_percent` | Percentage assigned ranks 1–4 |
+| `{prefix}_student_satisfaction_top5_percent` | Percentage assigned ranks 1–5 |
+| `{prefix}_students_got_choice_N_count` | Raw count of students assigned rank N (N = 1–6) |
+| `{prefix}_students_got_choice_N_percent` | Percentage of students assigned rank N |
+
+#### Terminal Summary Metrics
+
+After all trials complete, the terminal prints per-algorithm:
+- Average Student Ranking ± std
+- Student Satisfaction Top-3, Top-4, Top-5 with confidence ranges
+- Perfect Top-5 Rate (All Trials) — percentage of trials where zero students received rank 6
+- Perfect Top-5 Rate (Structurally Viable Only) — same metric, restricted to structurally viable trials
+- Structural Viability Rate — percentage of trials where every student had at least one viable option
+
+### Input Data Summary *(optional)*
+
+Generated when `--save_input_data` is passed. Saved to `{output_file}_input_summary.csv`.
+
+| Column | Description |
+|--------|-------------|
+| `trial` | Trial number |
+| `total_students` | Number of students in the trial |
+| `total_companies` | Total companies in the ranking pool |
+| `companies_ranked` | Number of companies that received at least one ranking |
+| `avg_company_ranking` | Average ranking across all companies |
+| `company_popularity_std` | Standard deviation of company popularity |
+| `company_ranking_skewness` | Asymmetry of the company ranking distribution |
+| `company_ranking_kurtosis` | Tail heaviness of the company ranking distribution |
+| `company_entropy` | Diversity measure of company popularity |
+| `company_outlier_count` | Total companies with unusual ranking patterns |
+| `company_outlier_percentage` | Percentage of companies that are outliers |
+| `highly_ranked_outlier_count` | Extremely popular companies (below Q1 − 1.5×IQR) |
+| `highly_ranked_outlier_percentage` | Percentage of extremely popular companies |
+| `lowly_ranked_outlier_count` | Extremely unpopular companies (above Q3 + 1.5×IQR) |
+| `lowly_ranked_outlier_percentage` | Percentage of extremely unpopular companies |
+| `best_company_avg_ranking` | Average ranking of the highest-ranked company |
+| `worst_company_avg_ranking` | Average ranking of the lowest-ranked company |
+| `company_ranking_range` | Range between best and worst company average rankings |
+| `top_company` | Name of the highest-scored company |
+| `top_company_score` | Composite score of the top company |
+| `second_company` | Name of the second-ranked company |
+| `second_company_score` | Composite score of the second company |
+| `third_company` | Name of the third-ranked company |
+| `third_company_score` | Composite score of the third company |
+| `most_included_company` | Company appearing in the most student top-5 rankings |
+| `most_included_count` | Number of students who included that company |
+| `company_score_range` | Range between highest and lowest composite company scores |
+| `total_rankings_given` | Total ranked preferences submitted (students × 5) |
+| `total_unranked_assignments` | Total rank-6 assignments across all students |
+
+### Legacy Mode Output
+
+Student group assignments saved to `ranker2data_{algorithm}.csv`. Format: one row per company, columns for each assigned student and their rank.
+
+---
+
+## Algorithm Performance
+
+### Typical Characteristics
+
+Based on 1,000-trial Monte Carlo runs under criticality selection. Exact values vary with student count, company count, and selection strategy.
+
+- **Fill First:** Student satisfaction 85–95%. Average ranking 1.8–2.2. Reliable and predictable. The only algorithm currently achieving the swappability threshold. Primary research subject.
+- **Rank First:** Student satisfaction 88–96%. Average ranking 1.7–2.0. Maximizes preference fulfillment but lowest Perfect Top-5 rate (0.4%).
+- **Best First:** Student satisfaction 70–85%. Average ranking 2.2–2.8. More variable. Perfect Top-5 rate 0.7%.
+- **Fragility Mirror:** Designed to minimize structural collapse. Perfect Top-5 rate 0.6%. Known endgame weakness.
+
+### Perfect Top-5 Rates by Selection Method
+
+| Algorithm | Ranked Selection (of 34% viable) | Criticality Selection (100% viable) |
+|-----------|----------------------------------|--------------------------------------|
+| Fill First | 2.1% | 2.8% |
+| Best First | 1.0% | 0.7% |
+| Rank First | 0.7% | 0.4% |
+| Fragility Mirror | not tested | 0.6% |
+
+### DOM Performance Profile *(1,000 trials, Fill First, Criticality, 30 students / 10 companies)*
+
+> **Note:** DOM parameter N = companies remaining after DOM phase. Companies locked = 10 − N.
+
+- **DOM 7–9 (light, 1–3 companies locked):** Best average rank. Stable Top-3 and Top-4 satisfaction. Modest Perfect Top-5 improvement.
+- **DOM 4–6 (moderate, 4–6 companies locked):** Good balance of average rank and Top-5 gains. Recommended starting point.
+- **DOM 1–3 (aggressive, 7–9 companies locked):** Perfect Top-5 rate spikes sharply (up to ~54% at DOM 1). Average rank degrades.
+
+DOM does not meaningfully increase trial-to-trial volatility (standard deviation stays within ~1–1.4 students across all DOM levels).
+
+---
+
+## File Structure
+
+```
+Student-Rank/
+├── ranker2.py                  # Main program — all algorithms, selection, DOM, simulation
+├── cparser.py                  # CSV parsing utilities for legacy mode
+├── requirements.txt            # Python dependencies
+├── StudentRanker.exe           # Standalone executable (generated via PyInstaller)
+├── data/
+│   ├── form_test_data*.csv     # Sample Google Form preference data files
+│   ├── rank_data.json          # JSON format test data
+│   └── rank_your_sheet.csv     # Template for manual data entry
+├── results/
+│   ├── *_first_*.csv           # Algorithm-specific result files
+│   ├── criticality_dom*.csv    # DOM sweep analysis output files
+│   └── bf_bu_results.jpg       # Performance visualization
+└── utilities/
+    ├── form_data_generator.py  # Synthetic data generation
+    ├── analyze_data.py         # Data analysis utilities
+    ├── companies.txt           # Company name database
+    └── names_and_emails.txt    # Student identity database
 ```
 
-### Company Scoring System
-```python
-# Weighted Scoring Formula
-rank_score = Σ(rank_count[i] × weight[i]) for i in [1,2,3,4,5]
-weights = [5, 4, 3, 2, 1]  # Rank 1 = 5 points, Rank 2 = 4 points, etc.
+---
 
-adjusted_score = rank_score / total_votes
-composite_score = 0.75 × rank_score + 0.25 × adjusted_score
+## Input File Format (Legacy Mode)
+
+The system expects a specific CSV structure from Google Forms or equivalent:
+
+- **Header Row:** required
+- **Core Columns:** Timestamp, Email, Name (first three columns)
+- **Company Columns:** format `"CompanyName - ProposerEmail@example.com"`
+- **Ranking Values:** integers 1–5 (student preferences)
+- **Missing Rankings:** empty cells treated as rank 6 (unranked)
+
 ```
-
-### Memory and Performance Optimizations
-- **Vectorized Operations:** Pandas/NumPy optimizations for large datasets
-- **Efficient Data Structures:** Minimal memory footprint for large trials
-- **Progress Tracking:** Non-blocking progress updates
-- **Error Recovery:** Graceful handling of edge cases
-
-## 📁 File Structure & Components
-
-### Core Files
-- **`ranker2.py`** - Main program with all algorithms and analysis
-- **`cparser.py`** - CSV parsing utilities for legacy mode
-- **`requirements.txt`** - Python dependencies
-- **`StudentRanker.exe`** - Standalone executable (generated)
-
-### Data Directory (`data/`)
-Contains test datasets and examples:
-- **`form_test_data*.csv`** - Sample preference data files
-- **`rank_data.json`** - JSON format test data
-- **`rank_your_sheet.csv`** - Template for manual data entry
-
-### Results Directory (`results/`)
-Algorithm output examples and performance comparisons:
-- **`*_first_*.csv`** - Algorithm-specific result files
-- **`bf_bu_results.jpg`** - Performance visualization
-
-### Utilities Directory (`utilities/`)
-Helper scripts and configuration:
-- **`form_data_generator.py`** - Synthetic data generation
-- **`analyze_data.py`** - Data analysis utilities  
-- **`companies.txt`** - Company name database
-- **`names_and_emails.txt`** - Student identity database
-
------
-
-## 📊 Input/Output Specifications
-
-### Input File Format (Legacy Mode)
-
-For processing existing CSV files, the system expects a specific format:
-
-#### CSV Structure Requirements:
-- **Header Row:** Required with specific column names
-- **Core Columns:** `Timestamp`, `Email`, `Name` (first three columns)
-- **Company Columns:** Format: `"CompanyName - ProposerEmail@example.com"`
-- **Ranking Values:** Integers 1-5 (student preferences)
-- **Missing Rankings:** Empty cells treated as rank 6 (unranked)
-
-#### Example Format:
-```csv
 Timestamp,Email,Name,TechCorp - john@example.com,DataSys - jane@example.com
 2024-01-01,student1@school.edu,Alice Johnson,1,3
 2024-01-01,student2@school.edu,Bob Smith,2,1
 ```
 
-### Output File Formats
+---
 
-#### Trial Mode Output (`algorithm_statistics.csv`)
-Comprehensive statistical analysis with the following structure:
+## Technical Implementation
 
-```csv
-trial,ff_mean_ranking,ff_std_dev,ff_satisfaction_rate,ff_median,ff_iqr,
-ff_rank_1_count,ff_rank_1_pct,ff_rank_2_count,ff_rank_2_pct,...
-[repeated for rf_ and bf_ algorithms]
-```
+### Data Generation
 
-**Column Definitions:**
-- `{alg}_avg_student_ranking` - Average rank assigned to students
-- `{alg}_std_student_ranking` - Standard deviation of rankings  
-- `{alg}_student_satisfaction_percent` - Percentage receiving ranks 1-3 (top-3 satisfaction)
-- `{alg}_student_satisfaction_top4_percent` - Percentage receiving ranks 1-4 (top-4 satisfaction)
-- `{alg}_student_satisfaction_top5_percent` - Percentage receiving ranks 1-5 (top-5 satisfaction)
-- `{alg}_median_student_ranking` - Median ranking value
-- `{alg}_iqr_student_ranking` - Interquartile range (Q3-Q1)
-- `{alg}_students_got_choice_N_count` - Raw count of students receiving rank N
-- `{alg}_students_got_choice_N_percent` - Percentage of students receiving rank N
+For each student: select 5 random companies from the pool, assign unique ranks 1–5, set all other companies to rank 6. Ensures no duplicate rankings per student.
 
-**Satisfaction Metrics Progression:**
-The three satisfaction thresholds provide comprehensive preference analysis:
-- **Top-3 Satisfaction:** Traditional "satisfied" threshold (ranks 1-3)
-- **Top-4 Satisfaction:** Extended satisfaction including 4th preference
-- **Top-5 Satisfaction:** Near-complete satisfaction (all ranked preferences)
+### Criticality Scoring
 
-This progression reveals algorithm performance across preference tiers and helps identify incremental satisfaction gains.
+For each candidate company: simulate removal, count how many students would lose all viable options. Companies are selected in order of decreasing removal-damage. Ties resolved by secondary criteria; process iterates until pool is filled.
 
-#### Input Data Analysis (`algorithm_statistics_input_summary.csv`)
-When using `--save_input_data`, generates company-centric analysis:
+### Fragility Computation
 
-```csv
-trial,total_companies,companies_ranked,avg_company_ranking,company_popularity_std,
-company_ranking_skewness,company_ranking_kurtosis,company_entropy,
-company_outlier_count,best_company_avg_ranking,worst_company_avg_ranking,...
-```
+Fragility(s) = count of selected companies where student s has rank 1–5. Rank 6 is strictly a fallback and does not count as a viable option. Recomputed after every placement.
 
-**Key Input Metrics:**
-- `total_companies` - Total companies in ranking pool
-- `companies_ranked` - Companies that received student rankings  
-- `avg_company_ranking` - Average ranking across all companies
-- `company_popularity_std` - Variation in company popularity
-- `company_ranking_skewness` - Distribution asymmetry in company preferences
-- `company_entropy` - Diversity measure of company popularity
-- `company_outlier_count` - Total companies with unusual ranking patterns
-- `highly_ranked_outlier_count` - Extremely popular companies (below Q1 - 1.5×IQR)
-- `highly_ranked_outlier_percentage` - Percentage of extremely popular companies
-- `lowly_ranked_outlier_count` - Extremely unpopular companies (above Q3 + 1.5×IQR)
-- `lowly_ranked_outlier_percentage` - Percentage of extremely unpopular companies
-- `top_company` / `top_company_score` - Highest-ranked company details
+Cascading (induced) fragility: placing student s in company c decreases the fragility of each other student who also had c as a viable option. The algorithm scores each candidate placement by the number of students whose fragility decreases as a result.
 
-This data enables analysis of **input characteristics** vs. **algorithm performance** correlations.
+### Performance
 
-#### Legacy Mode Output (`ranker2data_{algorithm}.csv`)
-Student group assignments by company:
+- Vectorized operations via Pandas and NumPy
+- 3.5× speedup on small datasets (30 students, 10 companies)
+- 9.7× speedup on large datasets (100+ students, 20+ companies)
 
-```csv
-Company,Student 1,Student 1 Rank,Student 2,Student 2 Rank,...
-TechCorp,Alice Johnson,1,Bob Smith,2,...
-DataSys,Carol White,1,David Brown,3,...
-```
+### Adding a Custom Algorithm
 
-## 🔬 Research Applications & Use Cases
-
-### Academic Research
-- **Educational Psychology:** Student preference satisfaction analysis
-- **Operations Research:** Multi-objective optimization studies
-- **Computer Science:** Algorithm performance comparison research
-- **Statistics:** Large-scale randomized trial analysis
-
-### Practical Applications
-- **University Programs:** Internship and project assignments
-- **Corporate Training:** Team formation and skill matching
-- **Event Management:** Workshop and session assignments
-- **Research Institutions:** Lab rotation assignments
-
-### Comparative Studies
-The system enables research into:
-- **Fairness vs. Efficiency** trade-offs in assignment algorithms
-- **Scale Effects** on algorithm performance (small vs. large groups)
-- **Preference Distribution** impact on satisfaction outcomes
-- **Real-world vs. Synthetic** data performance validation
-
-## 🧮 Advanced Configuration
-
-### Synthetic Data Generation Parameters
-
-#### Student Preference Modeling
-- **Company Pool Size:** Configurable via `--total_companies` (default: 20)
-- **Ranking Distribution:** Uniform random selection of 5 companies to rank per student
-- **Preference Realism:** No duplicate rankings per student (ranks 1-5 assigned uniquely)
-- **Company Proposal:** Random assignment of one proposed company per student
-- **Selection Competition:** Top `--selected_companies` compete for student assignments
-- **Scale Testing:** Supports 1-1000 students, 1-1000 companies in pool
-
-#### Company Name Generation
-- **File-based:** Loads from `utilities/companies.txt`
-- **Faker Integration:** Generates realistic company names when file insufficient
-- **Uniqueness:** Ensures no duplicate company names in dataset
-- **Pool Management:** Efficiently handles large company pools for realistic competition
-
-### Performance Tuning
-
-#### Memory Optimization
 ```python
-# Vectorized operations for large datasets
-# Efficient DataFrame operations
-# Minimal object creation in loops
-```
+def your_algorithm(df: pd.DataFrame, ttdf: pd.DataFrame,
+                   num_students: int, suppress_output: bool,
+                   proposed_companies: dict) -> pd.DataFrame:
+    # Your implementation
+    return student_groups_df
 
-#### Execution Speed
-- **Parallel Processing:** Ready for multi-threading implementation
-- **Caching:** Optimized data structure reuse
-- **Progress Tracking:** Non-blocking progress updates
-
-### Statistical Significance Testing
-
-#### Confidence Intervals
-The system calculates confidence intervals for:
-- Mean ranking values
-- Satisfaction rates  
-- Standard deviations
-- Choice distribution percentages
-
-#### Sample Size Recommendations
-- **Minimum Trials:** 30+ for basic significance
-- **Recommended Trials:** 100+ for reliable comparisons
-- **High-confidence Studies:** 500+ trials for publication-quality results
-
-## 🚀 Development & Extension
-
-### Code Architecture
-
-#### Modular Design
-- **Algorithm Functions:** Independent, swappable implementations
-- **Data Generation:** Separate, configurable synthetic data creation
-- **Statistical Analysis:** Comprehensive metrics collection
-- **I/O Handling:** Flexible input/output format support
-
-#### Extension Points
-```python
-# Adding new algorithms
+# Register in algorithm_functions dict:
 algorithm_functions = {
     0: ('Fill First', get_student_groups),
     1: ('Rank First', get_rank_first_student_groups),
     2: ('Best First', get_best_first_student_groups),
-    3: ('Custom Algorithm', your_algorithm_function)  # Add here
+    3: ('Fragility Mirror', get_fragility_mirror_student_groups),
+    4: ('Custom', your_algorithm)  # add here
 }
 ```
 
-### Custom Algorithm Development
+Then update the `--algorithms` choices and prefix lookup lists in the argument parser and summary sections.
 
-#### Required Function Signature
-```python
-def your_algorithm(df: pd.DataFrame, ttdf: pd.DataFrame, 
-                  num_students: int, suppress_output: bool, 
-                  proposed_companies: dict) -> pd.DataFrame:
-    # Your algorithm implementation
-    return student_groups_df
-```
+---
 
-#### Integration Steps
-1. Implement algorithm function with required signature
-2. Add to `algorithm_functions` dictionary
-3. Update command-line argument parsing
-4. Test with existing statistical framework
+## Research Context
 
-### Performance Benchmarking
+This system was developed and presented at USASBE (United States Association for Small Business and Entrepreneurship) as *Anti-Slytherin: A Fairness-Centered Approach to Team Formation* by Mark Annett, Professor of Practice, NJIT Martin Tuchman School of Management.
 
-Current optimization achievements:
-- **3.5x speedup** on small datasets (30 students, 10 companies)
-- **9.7x speedup** on large datasets (100+ students, 20+ companies)
-- **Memory efficiency** improvements for 1000+ trial runs
-- **Progress tracking** with minimal performance impact
+### Planned Future Work
 
-## 🤝 Contributing & Support
+- **Anti-Slytherin Swaps (Stage 1):** post-assignment repair that eliminates any remaining rank-6 assignments via swap chains of length ≤ 3. Fill First under criticality selection is currently the only algorithm that statistically reaches the condition where fewer than 3 swap chains are needed. This is the next implementation target.
+- **Rank-Improvement Swaps (Stage 2):** a second swap pass that moves students toward higher preferences without creating new rank-6 assignments. Expected to absorb most remaining satisfaction gaps, including Fragility Mirror endgame cases.
+- **Fragility Mirror endgame:** known weakness in late-stage placement. Targeted repair may be unnecessary if Stage 2 swapping resolves the same cases.
+- **Scale analysis:** understand full algorithm behavior outside the N=30 baseline.
+- **Accessibility:** make the tool more accessible to non-technical instructors.
 
-### Bug Reports
+---
+
+## Support and Bug Reports
+
 When reporting issues, please include:
-- Command-line arguments used
-- Error messages (full traceback)
-- Operating system and Python version
-- Sample data (if applicable)
-
-### Feature Requests
-Priority areas for enhancement:
-- Additional assignment algorithms
-- More sophisticated preference modeling
-- Advanced visualization capabilities
-- Multi-objective optimization features
-
-### Development Setup
-```bash
-# Clone repository
-git clone https://github.com/YourUsername/Student-Rank.git
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-
-# Install development dependencies
-pip install -r requirements.txt
-pip install pyinstaller  # for executable building
-```
+- Full command-line arguments used
+- Complete error message or traceback
+- Operating system and Python version (`python --version`)
+- Sample data if applicable
 
 ---
 
-## 📚 References & Citations
-
-### Algorithm Background
-- **Assignment Problems:** Classical operations research literature
-- **Preference Satisfaction:** Social choice theory and mechanism design
-- **Statistical Analysis:** Educational psychology and satisfaction measurement
-
-### Technical Implementation
-- **Pandas/NumPy:** High-performance data analysis libraries
-- **Faker:** Realistic synthetic data generation
-- **PyInstaller:** Cross-platform executable packaging
-
----
-
-*This documentation reflects the current state of the Student-Rank system as of August 2025. For the latest updates and additional features, please check the repository's latest commits.*
+*This documentation reflects the current state of the Student-Rank / Anti-Slytherin system. For the latest updates, see the repository commits.*
